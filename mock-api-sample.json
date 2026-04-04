@@ -1,0 +1,22 @@
+{
+  "apiSignals": {
+    "weather": { "rainfallMmPerHr": 65, "consecutiveRainHours": 2 },
+    "traffic": { "traffic": "high", "deliveryDropPercent": 78, "flooded": true },
+    "social": { "bandhVerified": false, "socialSeverityIndex": 1 },
+    "government": { "section144Active": false, "nightCurfewActive": false, "curfewHours": 0 }
+  },
+  "activeScenarios": [
+    {
+      "type": "Heavy Rain",
+      "triggerCondition": "Rainfall > 35mm/hr for 2+ consecutive hours during shift",
+      "lostHours": 2,
+      "severityFactor": 1.3
+    },
+    {
+      "type": "Waterlogging",
+      "triggerCondition": "Flooded zone with delivery density drop > 70%",
+      "lostHours": 4,
+      "severityFactor": 1.36
+    }
+  ]
+}
