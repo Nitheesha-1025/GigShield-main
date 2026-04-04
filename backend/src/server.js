@@ -63,9 +63,7 @@ app.post("/api/auth/signup", (req, res) => {
   return res.status(201).json({ token, user: sanitizeUser(user) });
 });
 
-app.get("/api", (req, res) => {
-  res.send("API is working 🚀");
-});
+
 
 app.post("/api/auth/login", (req, res) => {
   const { email, password } = req.body;
@@ -305,6 +303,9 @@ wss.on("connection", (ws, req) => {
   }
 });
 
+app.get("/api", (req, res) => {
+  res.send("API is working 🚀");
+});
 server.listen(PORT, () => {
   startWorldStream(4000, broadcastLiveSockets);
   console.log(`GigShield backend http://localhost:${PORT}`);
