@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { getWsLiveUrl, request } from "../api";
+import {
+  adminClaimDecision,
+  getAdminDashboard,
+  getAdminMlDashboard,
+  getWorkerDashboard,
+  getWsLiveUrl,
+  processClaim,
+  request,
+  simulatePayout,
+  submitClaim
+} from "../api";
 import Layout from "../components/Layout";
 import LiveOpsPanel from "../components/LiveOpsPanel.jsx";
 import {
@@ -405,39 +415,427 @@ function DisruptionPage({ disruption, apiSignals, activeScenarios, forecast }) {
   );
 }
 
-function ClaimsPage() {
-  const claims = useGigStore((s) => s.claims);
+function ClaimsPage({ role, claims, onSubmitClaim, onProcessClaim, onSimulatePayout }) {
+  const [form, setForm] = useState({
+    zone: "velachery",
+    claimedWeather: "heavy rain",
+    lostHours: 2,
+    provider: "razorpay_sandbox",
+    socialText: "",
+    gpsPoints: ""
+  });
+
+  async function submitNewClaim(event) {
+    event.preventDefault();
+    const gpsPoints = form.gpsPoints
+      ? form.gpsPoints
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const [lat, lng, timestamp] = line.split(",").map((x) => x.trim());
+            return { lat: Number(lat), lng: Number(lng), timestamp };
+          })
+      : [];
+
+    await onSubmitClaim({
+      zone: form.zone,
+      claimedWeather: form.claimedWeather,
+      lostHours: Number(form.lostHours),
+      provider: form.provider,
+      socialText: form.socialText,
+      gpsPoints
+    });
+  }
+
   return (
     <div className="space-y-4">
       <p className="text-slate-500 -mt-2">
-        Track payouts (Zustand store + server history). Manual triggers appear instantly.
+        {role === "admin"
+          ? "Admin claim review console: process claims and monitor payout eligibility."
+          : "Worker claim history: submit claims and receive payout when admin approves."}
       </p>
+      {role !== "admin" && (
+      <form onSubmit={submitNewClaim} className="card grid md:grid-cols-2 gap-3">
+        <input
+          className="input"
+          placeholder="Zone"
+          value={form.zone}
+          onChange={(event) => setForm({ ...form, zone: event.target.value })}
+          required
+        />
+        <input
+          className="input"
+          placeholder="Claimed Weather"
+          value={form.claimedWeather}
+          onChange={(event) => setForm({ ...form, claimedWeather: event.target.value })}
+        />
+        <input
+          className="input"
+          type="number"
+          min="1"
+          placeholder="Lost Hours"
+          value={form.lostHours}
+          onChange={(event) => setForm({ ...form, lostHours: event.target.value })}
+          required
+        />
+        <select
+          className="input"
+          value={form.provider}
+          onChange={(event) => setForm({ ...form, provider: event.target.value })}
+        >
+          <option value="razorpay_sandbox">Razorpay Sandbox</option>
+          <option value="stripe_sandbox">Stripe Sandbox</option>
+          <option value="mock_gateway">Mock Gateway</option>
+        </select>
+        <textarea
+          className="input md:col-span-2 min-h-[64px]"
+          placeholder="Social context (optional)"
+          value={form.socialText}
+          onChange={(event) => setForm({ ...form, socialText: event.target.value })}
+        />
+        <textarea
+          className="input md:col-span-2 min-h-[96px]"
+          placeholder="GPS points: one per line => lat,lng,ISO timestamp"
+          value={form.gpsPoints}
+          onChange={(event) => setForm({ ...form, gpsPoints: event.target.value })}
+        />
+        <button className="btn-primary md:col-span-2" type="submit">
+          Submit Claim
+        </button>
+      </form>
+      )}
       <div className="card overflow-auto">
       <table className="w-full text-sm min-w-[700px]">
         <thead>
           <tr className="text-left text-slate-500">
             <th className="py-2">Date</th>
             <th>Type</th>
+            <th>Trust</th>
             <th>Hours Lost</th>
             <th>Severity</th>
             <th>Compensation</th>
             <th>Status</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           {claims.map((claim) => (
             <tr key={claim.id} className="border-t">
-              <td className="py-2">{new Date(claim.date).toLocaleString()}</td>
-              <td>{claim.disruptionType}</td>
+              <td className="py-2">{new Date(claim.createdAt || claim.date).toLocaleString()}</td>
+              <td>{claim.disruptionType || claim.zone || "-"}</td>
+              <td>{claim.trustScore ?? claim.pipeline?.m8TrustScore ?? "—"}</td>
               <td>{claim.lostHours}</td>
-              <td>{claim.severityFactor != null ? `${Number(claim.severityFactor).toFixed(2)}×` : "—"}</td>
-              <td>Rs.{claim.payout ?? claim.amount ?? 0}</td>
-              <td><span className={`text-xs px-2 py-1 rounded-full ${claim.status === "Approved" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-700"}`}>{claim.status}</span></td>
+              <td>{claim.pipeline?.m3SeverityMultiplier != null ? `${Number(claim.pipeline.m3SeverityMultiplier).toFixed(2)}×` : claim.severityFactor != null ? `${Number(claim.severityFactor).toFixed(2)}×` : "—"}</td>
+              <td>Rs.{claim.payoutAmount ?? claim.payout ?? claim.amount ?? 0}</td>
+              <td><span className={`text-xs px-2 py-1 rounded-full ${claim.status === "APPROVED" || claim.status === "Approved" ? "bg-green-100 text-green-700" : claim.status === "PENDING_REVIEW" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-700"}`}>{claim.status}</span></td>
+              <td className="space-x-2">
+                {role === "admin" && (
+                  <button
+                    className="px-2 py-1 text-xs rounded border"
+                    onClick={() => onProcessClaim(claim.id)}
+                  >
+                    Process
+                  </button>
+                )}
+                {role !== "admin" && claim.status === "APPROVED_PENDING_PAYOUT" && (
+                  <button
+                    className="px-2 py-1 text-xs rounded border"
+                    onClick={() =>
+                      onSimulatePayout(claim.id, claim.payoutAmount || claim.payout || claim.amount || 0)
+                    }
+                  >
+                    Receive payout
+                  </button>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
       {!claims.length && <p className="text-sm text-slate-500 mt-2">No claims yet.</p>}
+      </div>
+    </div>
+  );
+}
+
+function WorkerDashboardPage({ workerStats }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-slate-500 -mt-2">Worker insurance protection metrics from backend.</p>
+      <div className="grid md:grid-cols-4 gap-3">
+        <div className="card">
+          <p className="text-sm text-slate-500">Total earnings protected</p>
+          <p className="text-3xl font-black">Rs.{Math.round(workerStats?.totalEarningsProtected || 0)}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Weekly coverage claims</p>
+          <p className="text-3xl font-black">{workerStats?.weeklyCoverage || 0}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Approved count</p>
+          <p className="text-3xl font-black">{workerStats?.statusBreakdown?.approved || 0}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Pending / Submitted</p>
+          <p className="text-3xl font-black">{workerStats?.statusBreakdown?.pendingSubmitted || 0}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminDashboardPage({
+  adminStats,
+  adminMlStats,
+  claims,
+  onProcessClaim,
+  onManualDecision,
+  processingClaimIds
+}) {
+  const heatmapRows = Object.entries(adminStats?.highRiskZoneHeatmap || {});
+  return (
+    <div className="space-y-4">
+      <p className="text-slate-500 -mt-2">Admin fraud, payout, and forecasting intelligence.</p>
+      <div className="grid md:grid-cols-3 gap-3">
+        <div className="card">
+          <p className="text-sm text-slate-500">Total claims</p>
+          <p className="text-3xl font-black">{adminStats?.totalClaims || 0}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Total payouts</p>
+          <p className="text-3xl font-black">{adminStats?.totalPayouts || 0}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Total paid</p>
+          <p className="text-3xl font-black">Rs.{Math.round(adminStats?.totalPaid || 0)}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Approved count</p>
+          <p className="text-3xl font-black">{adminStats?.approvedCount || 0}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Pending / Submitted</p>
+          <p className="text-3xl font-black">{adminStats?.pendingSubmittedCount || 0}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Loss ratio</p>
+          <p className="text-3xl font-black">{((adminStats?.lossRatio || 0) * 100).toFixed(1)}%</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Fraud detection rate</p>
+          <p className="text-3xl font-black">{((adminStats?.fraudDetectionRate || 0) * 100).toFixed(1)}%</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">Next-week claim prediction</p>
+          <p className="text-3xl font-black">{adminStats?.nextWeekClaimsPrediction || 0}</p>
+        </div>
+      </div>
+      <div className="card">
+        <p className="font-semibold mb-2">High-risk zone heatmap</p>
+        {!heatmapRows.length && <p className="text-sm text-slate-500">No zone data yet.</p>}
+        {!!heatmapRows.length && (
+          <div className="space-y-2">
+            {heatmapRows.map(([zone, count]) => (
+              <div key={zone}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="uppercase">{zone}</span>
+                  <span>{count}</span>
+                </div>
+                <div className="h-2 bg-slate-100 rounded-full">
+                  <div
+                    className="h-2 bg-red-500 rounded-full"
+                    style={{ width: `${Math.min(100, Number(count) * 10)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="card">
+        <p className="font-semibold mb-2">M5-M8 Pipeline Dashboard</p>
+        <div className="grid md:grid-cols-4 gap-3 text-sm">
+          <div className="p-3 rounded-xl bg-slate-50 border">
+            <p className="text-slate-500">M5 Avg anomaly</p>
+            <p className="text-2xl font-black">{adminMlStats?.m5?.avgAnomalyScore ?? 0}</p>
+            <p className="text-xs text-slate-500">High anomaly: {adminMlStats?.m5?.highAnomalyClaims ?? 0}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-50 border">
+            <p className="text-slate-500">M6 Avg ring probability</p>
+            <p className="text-2xl font-black">{adminMlStats?.m6?.avgFraudRingProbability ?? 0}</p>
+            <p className="text-xs text-slate-500">High ring risk: {adminMlStats?.m6?.ringRiskClaims ?? 0}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-50 border">
+            <p className="text-slate-500">M7 Severity mix</p>
+            <p className="text-xs mt-1">HIGH: {adminMlStats?.m7?.severityDistribution?.HIGH ?? 0}</p>
+            <p className="text-xs">MEDIUM: {adminMlStats?.m7?.severityDistribution?.MEDIUM ?? 0}</p>
+            <p className="text-xs">LOW/NONE: {(adminMlStats?.m7?.severityDistribution?.LOW ?? 0) + (adminMlStats?.m7?.severityDistribution?.NONE ?? 0)}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-50 border">
+            <p className="text-slate-500">M8 Avg trust score</p>
+            <p className="text-2xl font-black">{adminMlStats?.m8?.avgTrustScore ?? 0}</p>
+            <p className="text-xs text-slate-500">
+              A/H/R: {adminMlStats?.m8?.approvedBand ?? 0}/{adminMlStats?.m8?.holdBand ?? 0}/
+              {adminMlStats?.m8?.rejectBand ?? 0}
+            </p>
+          </div>
+        </div>
+      </div>
+      <div className="card overflow-auto">
+        <p className="font-semibold mb-3">Admin claim processing queue</p>
+        <table className="w-full text-sm min-w-[700px]">
+          <thead>
+            <tr className="text-left text-slate-500">
+              <th className="py-2">Claim ID</th>
+              <th>Worker</th>
+              <th>Status</th>
+              <th>M4</th>
+              <th>M5</th>
+              <th>M6</th>
+              <th>M7</th>
+              <th>M8</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {claims.map((claim) => (
+              <tr key={claim.id} className="border-t">
+                <td className="py-2">{claim.id.slice(0, 8)}</td>
+                <td>{claim.userId?.slice(0, 8)}</td>
+                <td>{claim.status}</td>
+                <td>{claim.pipeline?.m4BehaviorDeviation ?? 0}</td>
+                <td>{claim.pipeline?.m5AnomalyScore ?? 0}</td>
+                <td>{claim.pipeline?.m6FraudRingProbability ?? 0}</td>
+                <td>{claim.pipeline?.m7SocialSeverity?.severityClass ?? "NONE"}</td>
+                <td>{claim.trustScore ?? claim.pipeline?.m8TrustScore ?? 0}</td>
+                <td>
+                  {claim.status === "SUBMITTED" && (
+                    <button
+                      className="px-2 py-1 text-xs rounded border disabled:opacity-60"
+                      onClick={() => onProcessClaim(claim.id)}
+                      disabled={processingClaimIds.has(claim.id)}
+                    >
+                      {processingClaimIds.has(claim.id) ? "Processing..." : "Process"}
+                    </button>
+                  )}
+                  {claim.status === "PENDING_REVIEW" && (
+                    <>
+                      <button
+                        className="px-2 py-1 text-xs rounded border border-green-400 text-green-700"
+                        onClick={() => onManualDecision(claim.id, "APPROVED")}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        className="ml-2 px-2 py-1 text-xs rounded border border-red-400 text-red-700"
+                        onClick={() => onManualDecision(claim.id, "REJECTED")}
+                      >
+                        Reject
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MlPipelinePage({ baseline, claims, role }) {
+  const rows = Array.isArray(claims) ? claims : [];
+  const withPipeline = rows.filter((claim) => claim.pipeline);
+  const count = withPipeline.length || 1;
+  const m5Avg =
+    withPipeline.reduce((sum, claim) => sum + Number(claim.pipeline?.m5AnomalyScore || 0), 0) / count;
+  const m6Avg =
+    withPipeline.reduce((sum, claim) => sum + Number(claim.pipeline?.m6FraudRingProbability || 0), 0) / count;
+  const m8Avg =
+    withPipeline.reduce(
+      (sum, claim) => sum + Number(claim.trustScore ?? claim.pipeline?.m8TrustScore ?? 0),
+      0
+    ) / count;
+  const m5High = withPipeline.filter((claim) => Number(claim.pipeline?.m5AnomalyScore || 0) > 0.7).length;
+  const m6High = withPipeline.filter((claim) => Number(claim.pipeline?.m6FraudRingProbability || 0) > 0.65).length;
+  const m7Dist = withPipeline.reduce(
+    (acc, claim) => {
+      const cls = String(claim.pipeline?.m7SocialSeverity?.severityClass || "NONE").toUpperCase();
+      if (acc[cls] == null) acc.NONE += 1;
+      else acc[cls] += 1;
+      return acc;
+    },
+    { HIGH: 0, MEDIUM: 0, LOW: 0, NONE: 0 }
+  );
+
+  return (
+    <div className="space-y-4">
+      <p className="text-slate-500 -mt-2">
+        {role === "admin"
+          ? "Admin ML pipeline monitor for claim fraud and trust scoring."
+          : "Worker ML insights from your processed claim pipeline."}
+      </p>
+      <div className="grid md:grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="card">
+          <p className="text-sm text-slate-500">M4 Behavioral baseline</p>
+          <p className="text-xs mt-2">Avg hours: {baseline?.avgHours ?? "—"}</p>
+          <p className="text-xs">Avg income: Rs.{baseline?.avgIncome ?? "—"}</p>
+          <p className="text-xs">Deviation: {baseline?.deviationScore ?? "—"}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">M5 Anomaly Detector</p>
+          <p className="text-3xl font-black">{Number(m5Avg || 0).toFixed(3)}</p>
+          <p className="text-xs text-slate-500">High anomaly claims: {m5High}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">M6 Fraud Graph</p>
+          <p className="text-3xl font-black">{Number(m6Avg || 0).toFixed(3)}</p>
+          <p className="text-xs text-slate-500">Ring-risk claims: {m6High}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">M7 Social Severity</p>
+          <p className="text-xs mt-2">HIGH: {m7Dist.HIGH}</p>
+          <p className="text-xs">MEDIUM: {m7Dist.MEDIUM}</p>
+          <p className="text-xs">LOW: {m7Dist.LOW}</p>
+          <p className="text-xs">NONE: {m7Dist.NONE}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">M8 Trust Score</p>
+          <p className="text-3xl font-black">{Number(m8Avg || 0).toFixed(1)}</p>
+          <p className="text-xs text-slate-500">Based on processed claims</p>
+        </div>
+      </div>
+      <div className="card overflow-auto">
+        <p className="font-semibold mb-3">Latest claim pipeline outputs (M4-M8)</p>
+        <table className="w-full text-sm min-w-[860px]">
+          <thead>
+            <tr className="text-left text-slate-500">
+              <th className="py-2">Claim</th>
+              <th>M4 Deviation</th>
+              <th>M5 Anomaly</th>
+              <th>M6 Ring Prob.</th>
+              <th>M7 Severity</th>
+              <th>M8 Trust</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {withPipeline.map((claim) => (
+              <tr key={claim.id} className="border-t">
+                <td className="py-2">{claim.id.slice(0, 8)}</td>
+                <td>{claim.pipeline?.m4BehaviorDeviation ?? "—"}</td>
+                <td>{claim.pipeline?.m5AnomalyScore ?? "—"}</td>
+                <td>{claim.pipeline?.m6FraudRingProbability ?? "—"}</td>
+                <td>{claim.pipeline?.m7SocialSeverity?.severityClass ?? "NONE"}</td>
+                <td>{claim.trustScore ?? claim.pipeline?.m8TrustScore ?? "—"}</td>
+                <td>{claim.status}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!withPipeline.length && <p className="text-sm text-slate-500 mt-3">No processed pipeline rows yet.</p>}
       </div>
     </div>
   );
@@ -594,8 +992,11 @@ function PayoutPage({ profile, policy, onToast }) {
   );
 }
 
-export default function DashboardPage({ session, onLogout }) {
+export default function DashboardPage({ session, onLogout, preferredDashboard = "/worker-dashboard" }) {
   const token = session?.token;
+  const role = session?.selectedRole || session?.user?.role || "worker";
+  const isAdmin = role === "admin";
+  const claims = useGigStore((s) => s.claims);
   const [profile, setProfile] = useState(null);
   const [policy, setPolicy] = useState(null);
   const [plans, setPlans] = useState([]);
@@ -612,6 +1013,10 @@ export default function DashboardPage({ session, onLogout }) {
   const [wsConnected, setWsConnected] = useState(false);
   const [hourlyOverride, setHourlyOverride] = useState(null);
   const [shiftOverride, setShiftOverride] = useState(null);
+  const [workerStats, setWorkerStats] = useState(null);
+  const [adminStats, setAdminStats] = useState(null);
+  const [adminMlStats, setAdminMlStats] = useState(null);
+  const [processingClaimIds, setProcessingClaimIds] = useState(() => new Set());
   const location = useLocation();
 
   const profileRef = useRef(profile);
@@ -622,6 +1027,12 @@ export default function DashboardPage({ session, onLogout }) {
   useEffect(() => {
     profileRef.current = profile;
   }, [profile]);
+
+  const pushToast = useCallback((msg) => {
+    if (!msg) return;
+    setToast(msg);
+    setTimeout(() => setToast(""), 4000);
+  }, []);
 
   const applyLiveSnapshot = useCallback((data, { announceTriggers = false } = {}) => {
     setDisruption(data.disruption);
@@ -665,12 +1076,91 @@ export default function DashboardPage({ session, onLogout }) {
       }
       setPlans(planData);
       useGigStore.getState().hydrateClaimsFromServer(claimsData);
+      if (isAdmin) {
+        setAdminStats(await getAdminDashboard(token));
+        setAdminMlStats(await getAdminMlDashboard(token));
+      } else {
+        setWorkerStats(await getWorkerDashboard(token));
+      }
       useGigStore.getState().setTierFromPlanId(profileData.policy?.planId);
       await syncWorkerRow(profileData.user, profileData.policy);
     } catch (e) {
       if (import.meta.env.DEV) console.warn("refreshCoreData", e);
     }
-  }, [token]);
+  }, [isAdmin, token]);
+
+  const submitClaimFlow = useCallback(
+    async (payload) => {
+      try {
+        const response = await submitClaim(payload, token);
+        pushToast(`Claim submitted: ${response.claim?.id?.slice(0, 8) || ""}`);
+        const claimList = await request("/claims", {}, token);
+        useGigStore.getState().hydrateClaimsFromServer(claimList);
+        await refreshCoreData();
+      } catch (error) {
+        pushToast(error.message);
+      }
+    },
+    [pushToast, refreshCoreData, token]
+  );
+
+  const processClaimFlow = useCallback(
+    async (claimId) => {
+      try {
+        setProcessingClaimIds((prev) => new Set(prev).add(claimId));
+        useGigStore.setState((state) => ({
+          claims: state.claims.map((claim) =>
+            claim.id === claimId ? { ...claim, status: "PROCESSING" } : claim
+          )
+        }));
+        const response = await processClaim({ claimId }, token);
+        const status = response?.claim?.status || "UPDATED";
+        pushToast(`Claim ${status} · trust ${response?.claim?.trustScore ?? "-"}`);
+        const claimList = await request("/claims", {}, token);
+        useGigStore.getState().hydrateClaimsFromServer(claimList);
+        await refreshCoreData();
+      } catch (error) {
+        pushToast(error.message);
+        const claimList = await request("/claims", {}, token).catch(() => []);
+        if (claimList?.length) useGigStore.getState().hydrateClaimsFromServer(claimList);
+      } finally {
+        setProcessingClaimIds((prev) => {
+          const next = new Set(prev);
+          next.delete(claimId);
+          return next;
+        });
+      }
+    },
+    [pushToast, refreshCoreData, token]
+  );
+
+  const manualDecisionFlow = useCallback(
+    async (claimId, decision) => {
+      try {
+        await adminClaimDecision({ claimId, decision }, token);
+        pushToast(`Claim ${decision}`);
+        const claimList = await request("/claims", {}, token);
+        useGigStore.getState().hydrateClaimsFromServer(claimList);
+        await refreshCoreData();
+      } catch (error) {
+        pushToast(error.message);
+      }
+    },
+    [pushToast, refreshCoreData, token]
+  );
+
+  const simulatePayoutFlow = useCallback(
+    async (claimId, amount) => {
+      try {
+        const response = await simulatePayout({ claimId, amount }, token);
+        pushToast(`Payout ${response?.payout?.status}: ${response?.payout?.transaction_id || ""}`);
+        await refreshCoreData();
+      } catch (error) {
+        pushToast(error.message);
+      }
+    },
+    [pushToast, refreshCoreData, token]
+  );
 
   const pollDisruption = useCallback(async () => {
     if (!token) return;
@@ -707,6 +1197,14 @@ export default function DashboardPage({ session, onLogout }) {
   useEffect(() => {
     refreshCoreData();
   }, [refreshCoreData]);
+
+  useEffect(() => {
+    if (!token) return undefined;
+    const id = setInterval(() => {
+      refreshCoreData();
+    }, 5000);
+    return () => clearInterval(id);
+  }, [refreshCoreData, token]);
 
   useEffect(() => {
     if (!token) return undefined;
@@ -781,14 +1279,11 @@ export default function DashboardPage({ session, onLogout }) {
     setTimeout(() => setToast(""), 3000);
   }
 
-  const pushToast = useCallback((msg) => {
-    if (!msg) return;
-    setToast(msg);
-    setTimeout(() => setToast(""), 4000);
-  }, []);
-
   const titleMap = {
     "/": "Dashboard",
+    "/ml-pipeline": "ML Pipeline (M4-M8)",
+    "/worker-dashboard": "Worker Dashboard",
+    "/admin-dashboard": "Admin Dashboard",
     "/plans": "Insurance Plans",
     "/disruption": "Disruption Monitor",
     "/payout": "Dynamic Payout Calculator",
@@ -799,12 +1294,16 @@ export default function DashboardPage({ session, onLogout }) {
   };
 
   return (
-    <Layout title={titleMap[location.pathname] || "GigShield"} onLogout={onLogout} toast={toast}>
+    <Layout title={titleMap[location.pathname] || "GigShield"} onLogout={onLogout} toast={toast} role={role}>
       <GigLiveDriver intervalMs={3000} />
       <Routes>
         <Route
           path="/"
-          element={
+          element={<Navigate to={preferredDashboard} replace />}
+        />
+        <Route
+          path="/overview"
+          element={!isAdmin ? (
             <DashboardHome
               profile={profile}
               policy={policy}
@@ -823,31 +1322,71 @@ export default function DashboardPage({ session, onLogout }) {
               wsConnected={wsConnected}
               onToast={pushToast}
             />
-          }
+          ) : <Navigate to="/admin-dashboard" replace />}
+        />
+        <Route
+          path="/ml-pipeline"
+          element={isAdmin ? <MlPipelinePage baseline={baseline} claims={claims} role={role} /> : <Navigate to="/claims" replace />}
         />
         <Route
           path="/plans"
-          element={<PlansPage plans={plans} selectedPlan={policy?.planId} subscribe={subscribe} />}
+          element={!isAdmin ? <PlansPage plans={plans} selectedPlan={policy?.planId} subscribe={subscribe} /> : <Navigate to="/admin-dashboard" replace />}
+        />
+        <Route
+          path="/worker-dashboard"
+          element={!isAdmin ? <WorkerDashboardPage workerStats={workerStats} /> : <Navigate to="/admin-dashboard" replace />}
+        />
+        <Route
+          path="/admin-dashboard"
+          element={
+            isAdmin ? (
+              <AdminDashboardPage
+                adminStats={adminStats}
+                adminMlStats={adminMlStats}
+                claims={claims}
+                onProcessClaim={processClaimFlow}
+                onManualDecision={manualDecisionFlow}
+                processingClaimIds={processingClaimIds}
+              />
+            ) : (
+              <Navigate to="/claims" replace />
+            )
+          }
         />
         <Route
           path="/disruption"
-          element={
+          element={!isAdmin ? (
             <DisruptionPage
               disruption={disruption}
               apiSignals={apiSignals}
               activeScenarios={activeScenarios}
               forecast={forecast}
             />
-          }
+          ) : <Navigate to="/admin-dashboard" replace />}
         />
         <Route
           path="/payout"
-          element={<PayoutPage profile={profile} policy={policy} onToast={pushToast} />}
+          element={!isAdmin ? <PayoutPage profile={profile} policy={policy} onToast={pushToast} /> : <Navigate to="/admin-dashboard" replace />}
         />
-        <Route path="/claims" element={<ClaimsPage />} />
-        <Route path="/notifications" element={<NotificationsPage />} />
-        <Route path="/profile" element={<ProfilePage profile={profile} policy={policy} baseline={baseline} />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route
+          path="/claims"
+          element={
+            !isAdmin ? (
+              <ClaimsPage
+                role={role}
+                claims={claims}
+                onSubmitClaim={submitClaimFlow}
+                onProcessClaim={processClaimFlow}
+                onSimulatePayout={simulatePayoutFlow}
+              />
+            ) : (
+              <Navigate to="/admin-dashboard" replace />
+            )
+          }
+        />
+        <Route path="/notifications" element={!isAdmin ? <NotificationsPage /> : <Navigate to="/admin-dashboard" replace />} />
+        <Route path="/profile" element={!isAdmin ? <ProfilePage profile={profile} policy={policy} baseline={baseline} /> : <Navigate to="/admin-dashboard" replace />} />
+        <Route path="/settings" element={!isAdmin ? <SettingsPage /> : <Navigate to="/admin-dashboard" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

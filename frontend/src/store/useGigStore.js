@@ -81,7 +81,7 @@ export const useGigStore = create((set, get) => ({
         {
           ...claim,
           clientGenerated: true,
-          status: claim.status ?? "Approved"
+          status: claim.status ?? "SUBMITTED"
         },
         ...state.claims.filter((c) => c.id !== claim.id)
       ]
@@ -115,7 +115,8 @@ export const useGigStore = create((set, get) => ({
       disruptionType: "Heavy Rain (trigger)",
       lostHours: dh,
       severityFactor: severity,
-      payout: amount
+      payout: amount,
+      status: "SUBMITTED"
     };
     get().addClaim(claim);
     return claim;

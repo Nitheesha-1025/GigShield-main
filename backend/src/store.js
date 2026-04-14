@@ -1,7 +1,9 @@
 export const db = {
   users: [],
   policies: [],
-  claims: []
+  claims: [],
+  payouts: [],
+  fraud_logs: []
 };
 
 export const plans = [

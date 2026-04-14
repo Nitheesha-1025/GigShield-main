@@ -41,3 +41,49 @@ alter table public.payouts enable row level security;
 create policy "workers demo all" on public.workers for all using (true) with check (true);
 create policy "risk_scores demo all" on public.risk_scores for all using (true) with check (true);
 create policy "payouts demo all" on public.payouts for all using (true) with check (true);
+
+-- Fraud pipeline tables required by the claim processor.
+create table if not exists public.users (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  email text unique not null,
+  zone text,
+  pincode text,
+  created_at timestamptz default now()
+);
+
+create table if not exists public.claims (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.users (id) on delete cascade,
+  zone text not null,
+  claimed_weather text,
+  lost_hours numeric not null,
+  status text default 'SUBMITTED',
+  trust_score int,
+  decision text,
+  payout_amount numeric default 0,
+  pipeline jsonb default '{}'::jsonb,
+  created_at timestamptz default now(),
+  processed_at timestamptz
+);
+
+create table if not exists public.fraud_logs (
+  id uuid primary key default gen_random_uuid(),
+  claim_id uuid not null references public.claims (id) on delete cascade,
+  user_id uuid not null references public.users (id) on delete cascade,
+  fraud_score int not null,
+  reasons jsonb default '[]'::jsonb,
+  trust_score int,
+  created_at timestamptz default now()
+);
+
+create table if not exists public.payout_logs (
+  id uuid primary key default gen_random_uuid(),
+  claim_id uuid not null references public.claims (id) on delete cascade,
+  user_id uuid not null references public.users (id) on delete cascade,
+  transaction_id text not null,
+  provider text,
+  amount numeric not null,
+  status text not null,
+  created_at timestamptz default now()
+);

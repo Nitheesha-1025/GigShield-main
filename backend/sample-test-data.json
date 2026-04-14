@@ -1,0 +1,28 @@
+{
+  "submit_claim_payload": {
+    "zone": "velachery",
+    "claimedWeather": "heavy rain",
+    "lostHours": 3,
+    "provider": "razorpay_sandbox",
+    "socialText": "roads flooded near dark store and severe waterlogging",
+    "gpsPoints": [
+      { "lat": 12.9752, "lng": 80.2209, "timestamp": "2026-04-14T09:00:00Z" },
+      { "lat": 12.9762, "lng": 80.2219, "timestamp": "2026-04-14T09:05:00Z" },
+      { "lat": 12.977, "lng": 80.223, "timestamp": "2026-04-14T09:10:00Z" }
+    ]
+  },
+  "submit_claim_spoof_payload": {
+    "zone": "adyar",
+    "claimedWeather": "clear sky",
+    "lostHours": 4,
+    "provider": "stripe_sandbox",
+    "socialText": "no rain all good",
+    "gpsPoints": [
+      { "lat": 12.98, "lng": 80.22, "timestamp": "2026-04-14T10:00:00Z" },
+      { "lat": 13.35, "lng": 80.55, "timestamp": "2026-04-14T10:04:00Z" }
+    ]
+  },
+  "process_claim_payload": {
+    "claimId": "replace_with_claim_id"
+  }
+}

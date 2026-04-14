@@ -286,3 +286,18 @@ Fraudsters might spoof GPS, device signals, or account activity in isolation —
 **GigShield** — Built for the workers who keep your groceries moving. ⚡
 
 </div>
+
+---
+
+## Claim Fraud and Payout APIs
+
+New fraud-aware claim pipeline endpoints:
+
+- `POST /submit-claim` (alias: `POST /api/submit-claim`)
+- `GET /claim-status/:id` (alias: `GET /api/claim-status/:id`)
+- `POST /process-claim` (alias: `POST /api/process-claim`)
+- `POST /simulate-payout` (alias: `POST /api/simulate-payout`)
+- `GET /api/dashboard/worker`
+- `GET /api/dashboard/admin`
+
+Sample payloads are available in `backend/sample-test-data.json`.

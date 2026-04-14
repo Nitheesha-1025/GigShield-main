@@ -23,18 +23,22 @@ export default function App() {
     }),
     [session]
   );
+  const homePath =
+    (session?.selectedRole || session?.user?.role || "worker") === "admin"
+      ? "/admin-dashboard"
+      : "/claims";
 
   return (
     <Routes>
       <Route
         path="/auth"
-        element={session ? <Navigate to="/" replace /> : <AuthPage onAuth={auth.login} />}
+        element={session ? <Navigate to={homePath} replace /> : <AuthPage onAuth={auth.login} />}
       />
       <Route
         path="/*"
         element={
           session ? (
-            <DashboardPage session={session} onLogout={auth.logout} />
+            <DashboardPage session={session} onLogout={auth.logout} preferredDashboard={homePath} />
           ) : (
             <Navigate to="/auth" replace />
           )

@@ -1,7 +1,10 @@
 import { Link, NavLink } from "react-router-dom";
 
 const navItems = [
-  { to: "/", label: "Dashboard" },
+  { to: "/overview", label: "Dashboard" },
+  { to: "/ml-pipeline", label: "ML Pipeline" },
+  { to: "/worker-dashboard", label: "Worker Dashboard" },
+  { to: "/admin-dashboard", label: "Admin Dashboard" },
   { to: "/plans", label: "Insurance Plans" },
   { to: "/disruption", label: "Disruption Monitor" },
   { to: "/payout", label: "Payout Calculator" },
@@ -11,7 +14,15 @@ const navItems = [
   { to: "/settings", label: "Settings" }
 ];
 
-export default function Layout({ title, onLogout, children, toast }) {
+export default function Layout({ title, onLogout, children, toast, role = "worker" }) {
+  const visibleNavItems =
+    role === "admin"
+      ? [
+          { to: "/admin-dashboard", label: "Admin Dashboard" },
+          { to: "/ml-pipeline", label: "ML Pipeline" }
+        ]
+      : navItems.filter((item) => item.to !== "/admin-dashboard" && item.to !== "/ml-pipeline");
+
   return (
     <div className="min-h-screen bg-white md:flex">
       <aside className="w-full md:w-56 border-r border-slate-100 bg-white p-4 md:min-h-screen">
@@ -21,7 +32,7 @@ export default function Layout({ title, onLogout, children, toast }) {
         </Link>
         <p className="text-[11px] tracking-wider text-slate-400 mb-2">OVERVIEW</p>
         <nav className="flex md:flex-col gap-2 overflow-auto">
-          {navItems.slice(0, 5).map((item) => (
+          {visibleNavItems.slice(0, 5).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -38,7 +49,7 @@ export default function Layout({ title, onLogout, children, toast }) {
         </nav>
         <p className="text-[11px] tracking-wider text-slate-400 mt-6 mb-2">ACCOUNT</p>
         <nav className="flex md:flex-col gap-2 overflow-auto">
-          {navItems.slice(5).map((item) => (
+          {visibleNavItems.slice(5).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

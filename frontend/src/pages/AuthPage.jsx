@@ -5,6 +5,7 @@ const initialForm = {
   name: "",
   email: "",
   password: "",
+  role: "worker",
   zone: "Adyar",
   pincode: "600020",
   lat: 13.0067,
@@ -27,11 +28,12 @@ export default function AuthPage({ onAuth }) {
     try {
       const path = isLogin ? "/auth/login" : "/auth/signup";
       const payload = isLogin
-        ? { email: form.email, password: form.password }
+        ? { email: form.email, password: form.password, role: form.role }
         : {
             name: form.name,
             email: form.email,
             password: form.password,
+            role: form.role,
             zone: form.zone,
             pincode: form.pincode,
             location: {
@@ -42,7 +44,7 @@ export default function AuthPage({ onAuth }) {
             workingHours: Number(form.workingHours)
           };
       const data = await request(path, { method: "POST", body: JSON.stringify(payload) });
-      onAuth(data);
+      onAuth({ ...data, selectedRole: form.role });
     } catch (submitError) {
       setError(submitError.message);
     } finally {
@@ -147,6 +149,17 @@ export default function AuthPage({ onAuth }) {
               onChange={(event) => setForm({ ...form, password: event.target.value })}
               required
             />
+            <label className="block">
+              <span className="text-xs text-slate-500">Select dashboard role</span>
+              <select
+                className="input mt-1"
+                value={form.role}
+                onChange={(event) => setForm({ ...form, role: event.target.value })}
+              >
+                <option value="worker">Worker Dashboard</option>
+                <option value="admin">Admin Dashboard</option>
+              </select>
+            </label>
             {isLogin && <p className="text-right text-xs text-brand-700">Forgot password?</p>}
             {error && <p className="text-sm text-red-600">{error}</p>}
             <button type="submit" className="btn-primary w-full" disabled={loading}>

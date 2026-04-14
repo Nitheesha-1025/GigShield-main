@@ -32,3 +32,35 @@ export async function request(path, options = {}, token) {
   }
   return data;
 }
+
+export function submitClaim(payload, token) {
+  return request("/submit-claim", { method: "POST", body: JSON.stringify(payload) }, token);
+}
+
+export function processClaim(payload, token) {
+  return request("/process-claim", { method: "POST", body: JSON.stringify(payload) }, token);
+}
+
+export function getClaimStatus(claimId, token) {
+  return request(`/claim-status/${claimId}`, {}, token);
+}
+
+export function simulatePayout(payload, token) {
+  return request("/simulate-payout", { method: "POST", body: JSON.stringify(payload) }, token);
+}
+
+export function getWorkerDashboard(token) {
+  return request("/dashboard/worker", {}, token);
+}
+
+export function getAdminDashboard(token) {
+  return request("/dashboard/admin", {}, token);
+}
+
+export function getAdminMlDashboard(token) {
+  return request("/dashboard/admin-ml", {}, token);
+}
+
+export function adminClaimDecision(payload, token) {
+  return request("/admin/claim-decision", { method: "POST", body: JSON.stringify(payload) }, token);
+}

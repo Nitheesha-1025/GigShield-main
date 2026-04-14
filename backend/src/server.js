@@ -11,10 +11,26 @@ import crypto from "node:crypto";
 import { authMiddleware, signToken, verifyToken } from "./auth.js";
 import { db, plans, getTierCoveragePercent } from "./store.js";
 import { calculatePayout } from "./services/claimEngine.js";
-import { getWeatherSignal } from "./services/externalApis.js";
+import {
+  getGovernmentAlertSignal,
+  getTrafficSignal,
+  getWeatherSignal
+} from "./services/externalApis.js";
 import { calculateRiskAndPremium } from "./services/riskEngine.js";
 import { buildLiveDashboardState } from "./services/liveState.js";
 import { startWorldStream } from "./services/worldStream.js";
+import {
+  adminManualDecision,
+  getAdminDashboard,
+  getAdminMlPipelineMetrics,
+  getClaimById,
+  markClaimAsPaid,
+  getWorkerDashboard,
+  processClaimById,
+  runMLPipeline,
+  submitClaimRecord
+} from "./services/claimPipelineService.js";
+import { simulateInstantPayout } from "./services/paymentService.js";
 
 const app = express();
 app.use(cors());
@@ -32,7 +48,7 @@ function getUserPolicy(userId) {
 }
 
 app.post("/api/auth/signup", (req, res) => {
-  const { name, email, password, zone, pincode, location, dailyIncome, workingHours } = req.body;
+  const { name, email, password, zone, pincode, location, dailyIncome, workingHours, role } = req.body;
   if (!name || !email || !password || !zone || !pincode || !dailyIncome || !workingHours) {
     return res.status(400).json({ message: "All fields are required." });
   }
@@ -55,18 +71,19 @@ app.post("/api/auth/signup", (req, res) => {
     },
     dailyIncome: Number(dailyIncome),
     workingHours: Number(workingHours),
+    role: role === "admin" ? "admin" : "worker",
     createdAt: new Date().toISOString()
   };
 
   db.users.push(user);
-  const token = signToken({ userId: user.id, email: user.email });
+  const token = signToken({ userId: user.id, email: user.email, role: user.role });
   return res.status(201).json({ token, user: sanitizeUser(user) });
 });
 
 
 
 app.post("/api/auth/login", (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, role } = req.body;
   const user = db.users.find(
     (entry) => entry.email === email?.toLowerCase() && entry.password === password
   );
@@ -74,9 +91,10 @@ app.post("/api/auth/login", (req, res) => {
   if (!user) {
     return res.status(401).json({ message: "Invalid credentials." });
   }
+  const effectiveRole = role === "admin" ? "admin" : "worker";
 
-  const token = signToken({ userId: user.id, email: user.email });
-  return res.json({ token, user: sanitizeUser(user) });
+  const token = signToken({ userId: user.id, email: user.email, role: effectiveRole });
+  return res.json({ token, user: { ...sanitizeUser(user), role: effectiveRole } });
 });
 
 app.get("/api/plans", (_req, res) => {
@@ -147,7 +165,7 @@ function runAutoClaimsForUser(user, state) {
       severityFactor: scenario.severityFactor,
       payout,
       tierCoverage,
-      status: Math.random() > 0.5 ? "Approved" : "Processing"
+      status: "SUBMITTED"
     };
     detectClaimAnomaly(autoClaim);
     db.claims.push(autoClaim);
@@ -231,10 +249,167 @@ app.get("/api/risk", authMiddleware, (req, res) => {
 });
 
 app.get("/api/claims", authMiddleware, (req, res) => {
+  if (req.user.role === "admin") {
+    for (const claim of db.claims) {
+      const needsPipeline =
+        !claim.pipeline &&
+        (claim.status === "SUBMITTED" ||
+          claim.status === "PROCESSING" ||
+          claim.status === "PENDING_REVIEW");
+      if (needsPipeline) {
+        const user = db.users.find((entry) => entry.id === claim.userId);
+        if (!user) continue;
+        const policy = getUserPolicy(user.id);
+        const output = runMLPipeline(claim, user, policy);
+        claim.pipeline = output.pipeline;
+        claim.trustScore = output.trustScore;
+        claim.recommendedDecision = output.decision;
+        claim.payoutAmount = output.payoutAmount;
+      }
+    }
+  }
   const claims = db.claims
-    .filter((entry) => entry.userId === req.user.userId)
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
+    .filter((entry) => (req.user.role === "admin" ? true : entry.userId === req.user.userId))
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt || b.date || 0).getTime() - new Date(a.createdAt || a.date || 0).getTime()
+    );
   return res.json(claims);
+});
+
+function submitClaimHandler(req, res) {
+  const { zone, claimedWeather, lostHours, gpsPoints, socialText, provider } = req.body;
+  if (!zone || !lostHours) {
+    return res.status(400).json({
+      ok: false,
+      message: "zone and lostHours are required"
+    });
+  }
+
+  const claim = submitClaimRecord({
+    userId: req.user.userId,
+    zone,
+    claimedWeather,
+    lostHours: Number(lostHours),
+    gpsPoints: Array.isArray(gpsPoints) ? gpsPoints : [],
+    socialText: socialText || "",
+    provider: provider || "razorpay_sandbox"
+  });
+  const user = db.users.find((entry) => entry.id === req.user.userId);
+  if (user) {
+    const policy = getUserPolicy(user.id);
+    const output = runMLPipeline(claim, user, policy);
+    claim.pipeline = output.pipeline;
+    claim.trustScore = output.trustScore;
+    claim.recommendedDecision = output.decision;
+    claim.payoutAmount = output.payoutAmount;
+  }
+
+  return res.status(201).json({
+    ok: true,
+    message: "Claim submitted",
+    claim
+  });
+}
+app.post("/submit-claim", authMiddleware, submitClaimHandler);
+app.post("/api/submit-claim", authMiddleware, submitClaimHandler);
+
+function claimStatusHandler(req, res) {
+  const claim = getClaimById(req.params.id);
+  if (!claim || (req.user.role !== "admin" && claim.userId !== req.user.userId)) {
+    return res.status(404).json({ ok: false, message: "Claim not found" });
+  }
+  return res.json({ ok: true, claim });
+}
+app.get("/claim-status/:id", authMiddleware, claimStatusHandler);
+app.get("/api/claim-status/:id", authMiddleware, claimStatusHandler);
+
+async function processClaimHandler(req, res) {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ ok: false, message: "Only admin can process claims" });
+  }
+  const claimId = req.body?.claimId;
+  if (!claimId) {
+    return res.status(400).json({ ok: false, message: "claimId is required" });
+  }
+  const claim = getClaimById(claimId);
+  if (!claim) {
+    return res.status(404).json({ ok: false, message: "Claim not found" });
+  }
+
+  const start = Date.now();
+  const processed = await processClaimById(claimId);
+  const elapsedMs = Date.now() - start;
+  return res.json({
+    ok: true,
+    processing_ms: elapsedMs,
+    claim: processed
+  });
+}
+app.post("/process-claim", authMiddleware, processClaimHandler);
+app.post("/api/process-claim", authMiddleware, processClaimHandler);
+
+function simulatePayoutHandler(req, res) {
+  const { claimId, amount, provider } = req.body || {};
+  if (!claimId || !amount) {
+    return res.status(400).json({ ok: false, message: "claimId and amount are required" });
+  }
+  const claim = getClaimById(claimId);
+  if (!claim || (req.user.role !== "admin" && claim.userId !== req.user.userId)) {
+    return res.status(404).json({ ok: false, message: "Claim not found" });
+  }
+  if (claim.status !== "APPROVED" && claim.status !== "PAID") {
+    return res.status(400).json({ ok: false, message: "Claim is not eligible for payout" });
+  }
+
+  const payout = simulateInstantPayout({
+    claimId,
+    userId: claim.userId,
+    amount: Number(amount),
+    provider
+  });
+  const updatedClaim = markClaimAsPaid(claimId, payout);
+  return res.json({ ok: true, payout, claim: updatedClaim });
+}
+app.post("/simulate-payout", authMiddleware, simulatePayoutHandler);
+app.post("/api/simulate-payout", authMiddleware, simulatePayoutHandler);
+
+function adminDecisionHandler(req, res) {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ ok: false, message: "Only admin can approve/reject claims" });
+  }
+  const { claimId, decision } = req.body || {};
+  if (!claimId || !decision) {
+    return res.status(400).json({ ok: false, message: "claimId and decision are required" });
+  }
+  if (decision !== "APPROVED" && decision !== "REJECTED") {
+    return res.status(400).json({ ok: false, message: "decision must be APPROVED or REJECTED" });
+  }
+  const claim = adminManualDecision(claimId, decision);
+  if (!claim) {
+    return res.status(404).json({ ok: false, message: "Claim not found" });
+  }
+  return res.json({ ok: true, claim });
+}
+app.post("/admin/claim-decision", authMiddleware, adminDecisionHandler);
+app.post("/api/admin/claim-decision", authMiddleware, adminDecisionHandler);
+
+app.get("/api/dashboard/worker", authMiddleware, (req, res) => {
+  return res.json(getWorkerDashboard(req.user.userId));
+});
+
+app.get("/api/dashboard/admin", authMiddleware, (_req, res) => {
+  if (_req.user?.role && _req.user.role !== "admin") {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+  return res.json(getAdminDashboard());
+});
+
+app.get("/api/dashboard/admin-ml", authMiddleware, (req, res) => {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+  return res.json(getAdminMlPipelineMetrics());
 });
 
 app.get("/api/mock-data", (_req, res) => {
