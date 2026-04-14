@@ -27,7 +27,6 @@ import {
   markClaimAsPaid,
   getWorkerDashboard,
   processClaimById,
-  runMLPipeline,
   submitClaimRecord
 } from "./services/claimPipelineService.js";
 import { simulateInstantPayout } from "./services/paymentService.js";
@@ -249,25 +248,6 @@ app.get("/api/risk", authMiddleware, (req, res) => {
 });
 
 app.get("/api/claims", authMiddleware, (req, res) => {
-  if (req.user.role === "admin") {
-    for (const claim of db.claims) {
-      const needsPipeline =
-        !claim.pipeline &&
-        (claim.status === "SUBMITTED" ||
-          claim.status === "PROCESSING" ||
-          claim.status === "PENDING_REVIEW");
-      if (needsPipeline) {
-        const user = db.users.find((entry) => entry.id === claim.userId);
-        if (!user) continue;
-        const policy = getUserPolicy(user.id);
-        const output = runMLPipeline(claim, user, policy);
-        claim.pipeline = output.pipeline;
-        claim.trustScore = output.trustScore;
-        claim.recommendedDecision = output.decision;
-        claim.payoutAmount = output.payoutAmount;
-      }
-    }
-  }
   const claims = db.claims
     .filter((entry) => (req.user.role === "admin" ? true : entry.userId === req.user.userId))
     .sort(
@@ -293,17 +273,13 @@ function submitClaimHandler(req, res) {
     lostHours: Number(lostHours),
     gpsPoints: Array.isArray(gpsPoints) ? gpsPoints : [],
     socialText: socialText || "",
-    provider: provider || "razorpay_sandbox"
+    provider: provider || "razorpay_sandbox",
+    status: "SUBMITTED",
+    pipeline: null,
+    trustScore: null,
+    recommendedDecision: null,
+    payoutAmount: 0
   });
-  const user = db.users.find((entry) => entry.id === req.user.userId);
-  if (user) {
-    const policy = getUserPolicy(user.id);
-    const output = runMLPipeline(claim, user, policy);
-    claim.pipeline = output.pipeline;
-    claim.trustScore = output.trustScore;
-    claim.recommendedDecision = output.decision;
-    claim.payoutAmount = output.payoutAmount;
-  }
 
   return res.status(201).json({
     ok: true,
